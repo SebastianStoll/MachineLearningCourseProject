@@ -2,7 +2,9 @@
 title: "Predicting the quality of physical exercise"
 author: "Sebastian Stoll"
 date: "16 Aug 2015"
-output: html_document
+output: 
+    html_document:
+        mathjax: null
 ---
 
 <!--
@@ -27,8 +29,8 @@ The training data for predicting the quality of barbell lifts was taking from th
 Both files are in csv format and can be loaded without any modifications:
 
 ```{r}
-pmlTestingFileName <- 'pml-testing.csv'
-pmlTrainingFileName <- 'pml-Training.csv'
+pmlTestingFileName <- '/Users/sebastian/r+d/coursera/machine learning dss/course project/pml-testing.csv'
+pmlTrainingFileName <- '/Users/sebastian/r+d/coursera/machine learning dss/course project/pml-Training.csv'
 
 pmlTesting <- read.csv(file = pmlTestingFileName, header = TRUE)
 pmlTraining <- read.csv(file = pmlTrainingFileName, header = TRUE)
