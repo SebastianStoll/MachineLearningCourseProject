@@ -1,0 +1,141 @@
+---
+title: "Predicting the quality of physical exercise"
+author: "Sebastian Stoll"
+date: "16 Aug 2015"
+output: html_document
+---
+
+<!--
+Readings: http://www.stat.columbia.edu/~gelman/arm/missing.pdf
+-->
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+```
+
+# Synopsis
+
+The execution of physical exercises using precise and accentuated movements is important to reach a maximal training effect and to prevent injuries. In this project I am going a to build a classification model which predicts the quality of an exercise based on accelerometers attached to the belt, forearm and dumbell of probands. The resulting random forest based model that was created can predict the correct class with almost 100% accuracy.
+
+# Loading the Data
+
+The training data for predicting the quality of barbell lifts was taking from the project page of the Coursera Machine Learning course and placed into a local folder. More information about the dataset and related research can be found here: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises
+
+Both files are in csv format and can be loaded without any modifications:
+
+```{r}
+pmlTestingFileName <- 'pml-testing.csv'
+pmlTrainingFileName <- 'pml-Training.csv'
+
+pmlTesting <- read.csv(file = pmlTestingFileName, header = TRUE)
+pmlTraining <- read.csv(file = pmlTrainingFileName, header = TRUE)
+```
+
+# Exploratory Data Analysis
+
+To get a better idea of the different variables and their influence on the quality of an exercise I am using feature plots.
+
+Feature plots of total accelleration values:
+```{r,echo=FALSE}
+featurePlot(x=pmlTraining[,c("total_accel_arm","total_accel_forearm","total_accel_belt","total_accel_dumbbell")],y=pmlTraining$classe,plot="box")
+```
+
+Feature plots of pitch, yaw, roll per body part:
+```{r,echo=FALSE}
+pitchArm <- featurePlot(x=pmlTraining[,c("pitch_arm","yaw_arm","roll_arm")], y=pmlTraining$classe, plot="box")
+pitchForearm <- featurePlot(x=pmlTraining[,c("pitch_forearm","yaw_forearm","roll_forearm")], y=pmlTraining$classe, plot="box")
+pitchDumbbell <- featurePlot(x=pmlTraining[,c("pitch_dumbbell","yaw_dumbbell","roll_dumbbell")], y=pmlTraining$classe, plot="box")
+pitchBelt <- featurePlot(x=pmlTraining[,c("pitch_belt","yaw_belt","roll_belt")], y=pmlTraining$classe, plot="box")
+grid.arrange(pitchArm, pitchForearm, pitchDumbbell, pitchBelt,nrow=2)
+```
+
+Feature plots for the gyros values per body part:
+```{r,echo=FALSE}
+gyrosArm <- featurePlot(x=pmlTraining[,c("gyros_arm_x","gyros_arm_y","gyros_arm_z")], y=pmlTraining$classe, plot="box")
+gyrosForearm <- featurePlot(x=pmlTraining[,c("gyros_forearm_x","gyros_forearm_y","gyros_forearm_z")], y=pmlTraining$classe, plot="box")
+gyrosDumbbell <- featurePlot(x=pmlTraining[,c("gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z")], y=pmlTraining$classe, plot="box")
+gyrosBelt <- featurePlot(x=pmlTraining[,c("gyros_belt_x","gyros_belt_y","gyros_belt_z")], y=pmlTraining$classe, plot="box")
+grid.arrange(gyrosArm, gyrosForearm, gyrosDumbbell, gyrosBelt,nrow=2)
+```
+
+Furthermore I am checking for columns with more than 90% NAs to exclude them later in the preprocessing of the data.
+```{r}
+naCount <- colMeans(is.na(pmlTraining))
+naCount[naCount>0.90]
+```
+
+# Building the Classification Model
+
+When building my classification model I address the data preprocessing, feature and model selection and out of sample error in separate subsections.
+
+## Data Preprocessing
+
+The preprocessing I am doing aims at cleaning up the training set so that all remaining features are potential and usefull predictors.
+
+First we can remove the index and the name of the user from which the data originated as this will be not revelant for our model. The timestamps are also not of interest because they just track when the motion was recorded but not how. The window fields are excluded because they are just tracked as part of the trials.
+
+```{r}
+pmlTrainingPreprocessed <- select(pmlTraining, -X, -user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,-cvtd_timestamp,-new_window,-num_window)
+```
+
+All variables including standard deviations or variances are excluded as well because they are usually near zero variance predictors:
+
+```{r}
+columnNames <- names(pmlTrainingPreprocessed)
+removableColumns <- c(columnNames[grepl("var*", columnNames)],columnNames[grepl("avg*", columnNames)],columnNames[grepl("std*", columnNames)])
+pmlTrainingPreprocessed <- pmlTrainingPreprocessed[, !(names(pmlTrainingPreprocessed) %in% removableColumns)]
+```
+
+To identify which of the remaining features might be useful for predictions, features that are near zero variance features are being excluded:
+
+```{r}
+nsv <- nearZeroVar(pmlTrainingPreprocessed, saveMetrics=TRUE)
+pmlTrainingPreprocessed <- pmlTrainingPreprocessed[, !(names(pmlTrainingPreprocessed) %in% names(pmlTrainingPreprocessed)[nsv$nzv])]
+```
+
+While having an exploratory look at the data it also surfaced that some columns contain lots of NAs. To impute is not an option because about 95% in those columns are NAs, so they will be exluced as well.
+
+```{r}
+hasMissingValues = function(columnId, df) {
+    sum(is.na(df[,columnId]))
+}
+columnsWithNA <- unlist(lapply(1:72, hasMissingValues, pmlTrainingPreprocessed)) > 0
+pmlTrainingFinal <- pmlTrainingPreprocessed[, !(names(pmlTrainingPreprocessed) %in% names(pmlTrainingPreprocessed)[columnsWithNA])]
+```
+
+## Selecting a Classification Algorithm
+
+There are several possible machine learning algorithms that could be used predicting the classe variable indicating the quality of a barbell movement. E.g. bagging, tree or random forests.
+
+As I am aiming at a high accuracy and the size of the training data set still permits their application I decided to use random forests which are generally applicable to classification problems. I apply 10-fold cross validation because there are no available validation set for estimating an error-rate. Furthermore the train control method oob is used. It provides out-of-bag error estimates that are supposed to be as accurate as using a test set of the size of the training set for validations.
+
+I include all features into the model that are left after the preprocessing:
+
+```{r, cache=TRUE,message=FALSE,warning=FALSE}
+pmlModel <- train(classe ~ ., data=pmlTrainingFinal, method="rf", trControl = trainControl(method = "oob", number = 10))
+pmlModel$finalModel
+```
+
+The final model has an OOB error rate of about 0.45%
+
+## Out of Sample Error
+
+The out of sample or generalization error describes the error rate when our model is being applied to a new data set.
+
+In the case of this project there is no test data set that could be used for this. In addition to the oob error and given that we used a k-fold approach for cross validation I will apply our model to the training data set again using to helper functions that predict the hit and miss rates.
+
+```{r,message=FALSE,warning=FALSE}
+missClass = function(values,predictions) { sum(predictions != values)/length(values) }
+hitClass = function(values,predictions) { sum(predictions == values)/length(values) }
+missClass(pmlTraining$classe, predict(pmlModel, newdata = pmlTrainingFinal))
+hitClass(pmlTraining$classe, predict(pmlModel, newdata = pmlTrainingFinal))
+```
+
+The results show that we are close to the OOB estimate of the error rate and correctly predict each outcome.
+
+# Summary
+
+I created a model based on random forests that can predict with an almost perfect score if a barbell movement was of high quality or not. Exploratory data analysis and pre-processing of the data was used to shrink the number of features that are part of the model and to increase its accuracy.
